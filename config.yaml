@@ -1,4 +1,11 @@
 # SentiCast Configuration
+# ──────────────────────────────────────────────────────────────────────────────
+# Quick-start guide
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. Install:  uv sync
+# 2. Train:    uv run python -m src.train --config config.yaml --split_idx 0
+# 3. Web UI:   uv run python app.py
+# ──────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────
 # Data
@@ -19,14 +26,14 @@ data:
   # Options:
   #   "auto"                – try finBERT → sentence-transformers → TF-IDF+SVD
   #   "finbert"             – ProsusAI/finbert, finance-tuned BERT, 768-dim CLS token
-  #                           Requires: pip install transformers
+  #                           Requires: pip install transformers  (~500 MB download)
   #   "sentence-transformers" – all-MiniLM-L6-v2, general-purpose, 384-dim
   #                           Requires: pip install sentence-transformers
   #   "tfidf-svd"           – lightweight CPU fallback, news_embed_dim dimensions
-  news_encoder: "finbert"
+  news_encoder: "sentence-transformers"   # change to "finbert" for best quality
   # Embedding dimension.  For transformer-based encoders this is overridden
   # automatically (finBERT → 768, sentence-transformers → 384).
-  news_embed_dim: 768
+  news_embed_dim: 384
   # Normalization: "zscore" or "minmax"
   normalization: "zscore"
   # Missing value interpolation method
@@ -48,8 +55,8 @@ split:
 model:
   name: "SentiCast"          # model class to use
   d_model: 128               # core embedding dimension
-  n_heads: 8                 # transformer attention heads
-  n_layers: 4                # transformer encoder layers
+  n_heads: 4                 # transformer attention heads (must divide d_model)
+  n_layers: 3                # transformer encoder layers
   dropout: 0.1
 
   # GLAFF (Global-Local Adaptive Feature Fusion)
@@ -62,7 +69,7 @@ model:
     num_steps: 100           # DDPM diffusion steps
     beta_start: 1.0e-4
     beta_end: 0.02
-    # Inference steps (DDIM acceleration)
+    # Inference steps (DDIM acceleration); lower = faster inference
     inference_steps: 20
     schedule: "linear"       # "linear" or "cosine"
 
@@ -75,7 +82,7 @@ model:
 
   # News encoder
   news:
-    embed_dim: 768           # input embedding size (overridden at runtime by actual encoder)
+    embed_dim: 384           # input embedding size (overridden at runtime by actual encoder)
     proj_dim: 128            # projected dimension (matches d_model)
     num_heads: 4             # cross-attention heads for news–series fusion
 

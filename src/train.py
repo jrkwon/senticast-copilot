@@ -40,6 +40,7 @@ from src.data.preprocessing import (
     load_prices_real,
     make_rolling_splits,
 )
+from src.models.senticast import SentiCast, build_model
 from src.utils.metrics import compute_all_metrics, print_metrics
 
 

@@ -83,9 +83,47 @@ SentiCast는 세 가지 광물(금·은·구리)의 가격을 **시계열 자료
 
 ## 설치
 
+### 방법 1: uv 사용 (권장)
+
+[uv](https://docs.astral.sh/uv/)는 Rust로 작성된 빠른 Python 패키지 관리자입니다.
+
+```bash
+# uv 설치 (처음 한 번)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 가상환경 생성 및 의존성 설치
+uv sync
+
+# CPU-only PyTorch 사용 시 (GPU 없는 환경)
+uv sync --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+### 방법 2: pip 사용
+
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## 웹 인터페이스 (Web UI)
+
+학습과 평가를 위한 Gradio 기반 웹 인터페이스가 제공됩니다.
+
+```bash
+# uv로 실행 (권장)
+uv run python app.py
+
+# 또는
+python app.py
+```
+
+브라우저에서 `http://localhost:7860` 접속
+
+**탭 구성:**
+- **🚀 Training** — 하이퍼파라미터 설정 및 학습 시작/중지, 실시간 로그 및 손실 곡선
+- **🔍 Evaluation** — 체크포인트 선택, 평가 실행, 메트릭 테이블 및 예측 차트
+- **📄 Config** — 현재 `config.yaml` 내용 확인
 
 ---
 
@@ -114,26 +152,34 @@ python src/data/generate_sample.py --n_days 2000 --out_dir data/sample
 
 ## 학습
 
+### CLI
 ```bash
-# 첫 번째 롤링 윈도 학습
-python src/train.py --config config.yaml --split_idx 0
+# 첫 번째 롤링 윈도 학습 (uv)
+uv run python -m src.train --config config.yaml --split_idx 0
 
 # 전체 롤링 윈도 학습
-python src/train.py --config config.yaml --split_idx -1
+uv run python -m src.train --config config.yaml --split_idx -1
 ```
 
-주요 하이퍼파라미터는 `config.yaml`에서 조정합니다.
+### 웹 UI
+`python app.py` 실행 후 브라우저에서 **🚀 Training** 탭을 사용합니다.
+
+주요 하이퍼파라미터는 `config.yaml`에서 조정하거나 웹 UI에서 실시간으로 변경할 수 있습니다.
 
 ---
 
 ## 평가
 
+### CLI
 ```bash
-python src/evaluate.py \
+uv run python -m src.evaluate \
   --config config.yaml \
   --checkpoint checkpoints/best_split0.pt \
   --split_idx 0
 ```
+
+### 웹 UI
+`python app.py` 실행 후 **🔍 Evaluation** 탭에서 체크포인트를 선택하고 실행합니다.
 
 출력 예시:
 ```
