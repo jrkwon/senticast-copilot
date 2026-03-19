@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints (large binary files)
+checkpoints/*.pt
+checkpoints/*.pth
+
+# Evaluation results (regeneratable)
+results/*.npz
+results/*.json
+
+# Figures (regeneratable)
+figures/*.png
+
+# Logs
+logs/
+
+# Data (sensitive / large)
+data/sample/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
