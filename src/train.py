@@ -40,7 +40,6 @@ from src.data.preprocessing import (
     load_prices_real,
     make_rolling_splits,
 )
-from src.models.senticast import SentiCast, build_model
 from src.utils.metrics import compute_all_metrics, print_metrics
 
 
@@ -121,8 +120,11 @@ def run_epoch(
             ps  = batch["price_series"].to(device)
             ne  = batch["news_embeds"].to(device)
             tgt = batch["targets"].to(device)
+            nm  = batch.get("news_mask")
+            if nm is not None:
+                nm = nm.to(device)
 
-            out = model(ps, ne, targets=tgt)
+            out = model(ps, ne, targets=tgt, news_mask=nm)
             loss = compute_loss(out, tgt, quantiles, hw, moe_coeff)
 
             if training:
@@ -226,8 +228,11 @@ def evaluate_on_test(
         ps  = batch["price_series"].to(device)
         ne  = batch["news_embeds"].to(device)
         tgt = batch["targets"].cpu().numpy()
+        nm  = batch.get("news_mask")
+        if nm is not None:
+            nm = nm.to(device)
 
-        pred = model.predict(ps, ne, n_samples=20)
+        pred = model.predict(ps, ne, n_samples=20, news_mask=nm)
         all_true.append(tgt)
         all_mean.append(pred["mean"].cpu().numpy())
         all_lower.append(pred["lower"].cpu().numpy())
@@ -284,6 +289,7 @@ def main(args: argparse.Namespace) -> None:
     # ── Load data ──────────────────────────────────────────────────────────────
     log.info("Loading data …")
     data_dir = cfg["data"].get("data_dir")
+    news_mask = None
     if data_dir:
         log.info(f"Using real dataset from '{data_dir}'")
         prices_df = load_prices_real(data_dir, minerals)
@@ -298,8 +304,14 @@ def main(args: argparse.Namespace) -> None:
     # ── Build news tensor (done once; cached across splits) ───────────────────
     log.info("Building news embeddings …")
     if data_dir:
+        encoder_name = cfg["data"].get("news_encoder", "auto")
         cache_path = cfg["data"].get("news_cache_path", "data/cache/news_tensor.npy")
-        news_tensor = build_news_tensor_real(news_df, dates, minerals, embed_dim, cache_path)
+        news_tensor, news_mask = build_news_tensor_real(
+            news_df, dates, minerals, embed_dim, cache_path, encoder_name
+        )
+        # Sync embed_dim with what the encoder actually produced
+        embed_dim = news_tensor.shape[-1]
+        cfg["data"]["news_embed_dim"] = embed_dim
     else:
         news_tensor = build_news_tensor(news_df, dates, minerals, embed_dim)
 
@@ -331,7 +343,7 @@ def main(args: argparse.Namespace) -> None:
 
         # ── Datasets ──────────────────────────────────────────────────────────
         train_ds, val_ds, test_ds = build_datasets(
-            prices_norm, news_tensor, dates, split, horizons, lookback
+            prices_norm, news_tensor, dates, split, horizons, lookback, news_mask
         )
         log.info(f"  train={len(train_ds)}  val={len(val_ds)}  test={len(test_ds)}")
 

@@ -322,28 +322,104 @@ def load_news_real(data_dir: str, minerals: List[str]) -> pd.DataFrame:
 
 # ── Text embedding ────────────────────────────────────────────────────────────
 
+# Embedding dimensions for each supported encoder
+_ENCODER_DIMS: dict = {
+    "finbert": 768,
+    "sentence-transformers": 384,
+}
+
+
 def _build_text_encoder(
     all_texts: List[str],
     embed_dim: int,
-) -> Callable[[List[str]], np.ndarray]:
+    encoder_name: str = "auto",
+) -> Tuple[Callable[[List[str]], np.ndarray], int]:
     """
-    Return a callable ``encode(texts) -> np.ndarray`` of shape ``(N, embed_dim)``.
+    Return ``(encode_fn, actual_embed_dim)``.
 
-    Tries ``sentence-transformers`` (``all-MiniLM-L6-v2``, 384-dim) first;
-    falls back to TF-IDF + Truncated SVD (sklearn) if unavailable.
+    ``encode_fn(texts)`` returns ``np.ndarray`` of shape ``(N, actual_embed_dim)``.
+
+    Priority order when ``encoder_name="auto"``:
+      1. **finBERT** (``ProsusAI/finbert``, 768-dim) – finance-domain BERT; produces
+         CLS-token embeddings that capture financial sentiment and context.
+      2. **sentence-transformers** (``all-MiniLM-L6-v2``, 384-dim) – general-purpose
+         semantic similarity model.
+      3. **TF-IDF + Truncated SVD** (sklearn) – lightweight CPU fallback; dimensionality
+         is ``embed_dim`` (capped by corpus size).
+
+    Parameters
+    ----------
+    all_texts    : list of texts used to fit the TF-IDF fallback (ignored for
+                   transformer-based encoders).
+    embed_dim    : desired output dimension; used only by the TF-IDF fallback.
+    encoder_name : one of ``"auto"``, ``"finbert"``,
+                   ``"sentence-transformers"``, ``"tfidf-svd"``.
     """
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        log.info("Using sentence-transformers encoder (all-MiniLM-L6-v2)")
+    want_finbert = encoder_name in ("auto", "finbert")
+    want_st      = encoder_name in ("auto", "sentence-transformers")
 
-        def _st_encode(texts: List[str]) -> np.ndarray:
-            return model.encode(texts, show_progress_bar=False, batch_size=32)
+    # ── 1. finBERT ───────────────────────────────────────────────────────────
+    if want_finbert:
+        try:
+            import torch as _torch
+            from transformers import AutoModel, AutoTokenizer  # type: ignore
 
-        return _st_encode
-    except ImportError:
-        pass
+            _tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+            _model     = AutoModel.from_pretrained("ProsusAI/finbert")
+            _model.eval()
+            _device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
+            _model.to(_device)
+            log.info("Using finBERT encoder (ProsusAI/finbert, 768-dim)")
 
+            def _finbert_encode(texts: List[str]) -> np.ndarray:
+                results = []
+                batch_size = 16
+                for start in range(0, len(texts), batch_size):
+                    batch = texts[start : start + batch_size]
+                    enc = _tokenizer(
+                        batch,
+                        padding=True,
+                        truncation=True,
+                        max_length=512,
+                        return_tensors="pt",
+                    )
+                    enc = {k: v.to(_device) for k, v in enc.items()}
+                    with _torch.no_grad():
+                        out = _model(**enc)
+                    # CLS token (first token) of the last hidden state
+                    cls = out.last_hidden_state[:, 0, :].cpu().numpy()
+                    results.append(cls)
+                return np.concatenate(results, axis=0).astype(np.float32)
+
+            return _finbert_encode, 768
+        except (ImportError, OSError):
+            if encoder_name == "finbert":
+                raise RuntimeError(
+                    "finBERT encoder requested but 'transformers' library or "
+                    "the 'ProsusAI/finbert' model is unavailable. "
+                    "Install it with: pip install transformers"
+                )
+
+    # ── 2. sentence-transformers ─────────────────────────────────────────────
+    if want_st:
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+
+            _st_model = SentenceTransformer("all-MiniLM-L6-v2")
+            log.info("Using sentence-transformers encoder (all-MiniLM-L6-v2, 384-dim)")
+
+            def _st_encode(texts: List[str]) -> np.ndarray:
+                return _st_model.encode(texts, show_progress_bar=False, batch_size=32)
+
+            return _st_encode, 384
+        except ImportError:
+            if encoder_name == "sentence-transformers":
+                raise RuntimeError(
+                    "sentence-transformers encoder requested but the library is "
+                    "unavailable. Install it with: pip install sentence-transformers"
+                )
+
+    # ── 3. TF-IDF + Truncated SVD ────────────────────────────────────────────
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.decomposition import TruncatedSVD
 
@@ -362,7 +438,7 @@ def _build_text_encoder(
             dense = np.pad(dense, ((0, 0), (0, embed_dim - dense.shape[1])))
         return dense[:, :embed_dim]
 
-    return _tfidf_encode
+    return _tfidf_encode, n_components
 
 
 def build_news_tensor_real(
@@ -371,29 +447,41 @@ def build_news_tensor_real(
     minerals: List[str],
     embed_dim: int,
     cache_path: Optional[str] = None,
-) -> np.ndarray:
+    encoder_name: str = "auto",
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Build the news embedding tensor for the real dataset.
+    Build the news embedding tensor and availability mask for the real dataset.
 
     For each reference date *t* and mineral *m*, finds the most recently
     published news row where ``start_date <= t``, then embeds its
-    short/medium/long summary texts.
+    short/medium/long summary texts.  When no such row exists (date is before
+    the news coverage window) the embedding stays zero **and** the mask entry
+    is set to ``False``.
 
     Parameters
     ----------
-    news_df   : output of ``load_news_real``
-    dates     : aligned date Series from the prices DataFrame
-    minerals  : ordered list of mineral names
-    embed_dim : target embedding dimension
-    cache_path: optional path to a ``.npy`` file for caching the result
+    news_df      : output of ``load_news_real``
+    dates        : aligned date Series from the prices DataFrame
+    minerals     : ordered list of mineral names
+    embed_dim    : desired embedding dimension (used by TF-IDF fallback; transformer
+                   encoders determine their own dimension)
+    cache_path   : optional path prefix for caching results; the function saves
+                   ``<cache_path>`` (tensor) and ``<cache_path>.mask.npy`` (mask).
+    encoder_name : which text encoder to use – ``"auto"`` (default), ``"finbert"``,
+                   ``"sentence-transformers"``, or ``"tfidf-svd"``.
 
     Returns
     -------
-    tensor : np.ndarray, shape (len(dates), n_minerals, 3, embed_dim)
+    tensor : np.ndarray, shape (len(dates), n_minerals, 3, actual_embed_dim)
+    mask   : np.ndarray, shape (len(dates), n_minerals), dtype bool
+        ``True`` where a news row was found; ``False`` where no news exists
+        (typically dates before the news coverage start date).
     """
-    if cache_path and os.path.exists(cache_path):
+    mask_path = f"{cache_path}.mask.npy" if cache_path else None
+
+    if cache_path and os.path.exists(cache_path) and mask_path and os.path.exists(mask_path):
         log.info(f"Loading cached news tensor from {cache_path}")
-        return np.load(cache_path)
+        return np.load(cache_path), np.load(mask_path)
 
     # ── Build the text encoder fitted on ALL news texts ───────────────────────
     all_texts: List[str] = (
@@ -401,7 +489,14 @@ def build_news_tensor_real(
         + news_df["text_medium"].tolist()
         + news_df["text_long"].tolist()
     )
-    encoder = _build_text_encoder(all_texts, embed_dim)
+    encoder, actual_dim = _build_text_encoder(all_texts, embed_dim, encoder_name)
+
+    if actual_dim != embed_dim:
+        log.info(
+            f"Encoder output dimension is {actual_dim} "
+            f"(config news_embed_dim={embed_dim} will be overridden)."
+        )
+        embed_dim = actual_dim
 
     # ── Embed all unique texts (deduplicated) ─────────────────────────────────
     unique_texts = list(dict.fromkeys(all_texts))
@@ -409,10 +504,11 @@ def build_news_tensor_real(
     unique_embeddings = encoder(unique_texts)
     embed_map = {t: unique_embeddings[i] for i, t in enumerate(unique_texts)}
 
-    # ── Build date-aligned tensor ─────────────────────────────────────────────
+    # ── Build date-aligned tensor and mask ───────────────────────────────────
     n = len(dates)
     n_min = len(minerals)
     tensor = np.zeros((n, n_min, 3, embed_dim), dtype=np.float32)
+    news_mask = np.zeros((n, n_min), dtype=bool)
 
     # Pre-group and sort news by mineral for fast lookups
     news_by_mineral = {
@@ -430,19 +526,30 @@ def build_news_tensor_real(
 
         for i, d in enumerate(dates_ts):
             # Most recent row whose start_date ≤ reference date d
-            mask = starts <= d
-            if not mask.any():
+            valid = starts <= d
+            if not valid.any():
+                # No news available yet → tensor stays zero, mask stays False
                 continue
-            idx = int(np.where(mask)[0][-1])
+            idx = int(np.where(valid)[0][-1])
             row = m_news.iloc[idx]
 
-            tensor[i, j, 0] = embed_map.get(row["text_short"],  np.zeros(embed_dim, dtype=np.float32))
-            tensor[i, j, 1] = embed_map.get(row["text_medium"], np.zeros(embed_dim, dtype=np.float32))
-            tensor[i, j, 2] = embed_map.get(row["text_long"],   np.zeros(embed_dim, dtype=np.float32))
+            tensor[i, j, 0] = embed_map.get(row["text_short"],  np.zeros(embed_dim, np.float32))
+            tensor[i, j, 1] = embed_map.get(row["text_medium"], np.zeros(embed_dim, np.float32))
+            tensor[i, j, 2] = embed_map.get(row["text_long"],   np.zeros(embed_dim, np.float32))
+            news_mask[i, j] = True  # mark as available
+
+    n_with_news = news_mask.any(axis=1).sum()
+    n_total     = len(dates)
+    log.info(
+        f"News coverage: {n_with_news}/{n_total} dates have ≥1 mineral with news "
+        f"({100 * n_with_news / n_total:.1f}%)"
+    )
 
     if cache_path:
         os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
         np.save(cache_path, tensor)
-        log.info(f"Saved news tensor cache → {cache_path}")
+        np.save(mask_path, news_mask)
+        log.info(f"Saved news tensor → {cache_path}")
+        log.info(f"Saved news mask   → {mask_path}")
 
-    return tensor
+    return tensor, news_mask

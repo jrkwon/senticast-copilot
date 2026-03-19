@@ -4,6 +4,7 @@ PyTorch Dataset for SentiCast.
 Each sample corresponds to a reference date T and contains:
   - price_series : (lookback, n_minerals)          – normalised prices
   - news_embeds  : (n_minerals, 3, embed_dim)       – short/medium/long news
+  - news_mask    : (n_minerals,)  bool              – True where news is available
   - targets      : (n_horizons, n_minerals)         – future prices (normalised)
   - target_dates : list of date strings (for logging)
 """
@@ -39,6 +40,9 @@ class MineralDataset(Dataset):
         First valid index in the full timeline for this split.
     end : int
         One-past-last valid index for this split.
+    news_mask : np.ndarray or None, shape (T_total, n_minerals), dtype bool
+        ``True`` where a real news row exists.  When ``None``, all entries are
+        treated as available (backward-compatible with the sample-data path).
     """
 
     def __init__(
@@ -50,6 +54,7 @@ class MineralDataset(Dataset):
         lookback: int = 180,
         start: int = 0,
         end: Optional[int] = None,
+        news_mask: Optional[np.ndarray] = None,
     ):
         self.prices = prices_norm
         self.news   = news_tensor
@@ -57,6 +62,11 @@ class MineralDataset(Dataset):
         self.horizons = sorted(horizons)
         self.lookback = lookback
         self.max_horizon = max(horizons)
+        # All-True sentinel when no mask is supplied (sample-data path)
+        n_minerals = prices_norm.shape[1]
+        if news_mask is None:
+            news_mask = np.ones((len(prices_norm), n_minerals), dtype=bool)
+        self.news_mask = news_mask
 
         total = len(prices_norm)
         end = end if end is not None else total
@@ -79,6 +89,7 @@ class MineralDataset(Dataset):
 
         # News at reference date t (or last available)
         news_embeds = self.news[t - 1]                             # (M, 3, E)
+        news_mask   = self.news_mask[t - 1]                        # (M,) bool
 
         # Targets: prices at t + h for each horizon h
         targets = np.stack([self.prices[t + h - 1] for h in self.horizons], axis=0)  # (H, M)
@@ -86,6 +97,7 @@ class MineralDataset(Dataset):
         return {
             "price_series": torch.tensor(price_series, dtype=torch.float32),
             "news_embeds":  torch.tensor(news_embeds,  dtype=torch.float32),
+            "news_mask":    torch.tensor(news_mask,    dtype=torch.bool),
             "targets":      torch.tensor(targets,      dtype=torch.float32),
             "ref_idx":      torch.tensor(t,            dtype=torch.long),
         }
@@ -102,6 +114,7 @@ def build_datasets(
     split,          # DataSplit namedtuple (train/val/test index ranges)
     horizons: List[int],
     lookback: int = 180,
+    news_mask: Optional[np.ndarray] = None,
 ) -> Tuple["MineralDataset", "MineralDataset", "MineralDataset"]:
     """Return (train_ds, val_ds, test_ds) for a given DataSplit."""
     kwargs = dict(
@@ -110,6 +123,7 @@ def build_datasets(
         dates=dates,
         horizons=horizons,
         lookback=lookback,
+        news_mask=news_mask,
     )
     train_ds = MineralDataset(**kwargs, start=split.train[0], end=split.train[1])
     val_ds   = MineralDataset(**kwargs, start=split.val[0],   end=split.val[1])

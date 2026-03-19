@@ -56,6 +56,7 @@ def main(args: argparse.Namespace) -> None:
 
     # ── Load data ──────────────────────────────────────────────────────────────
     data_dir = cfg["data"].get("data_dir")
+    news_mask = None
     if data_dir:
         log.info(f"Using real dataset from '{data_dir}'")
         prices_df = load_prices_real(data_dir, minerals)
@@ -87,13 +88,20 @@ def main(args: argparse.Namespace) -> None:
 
     # ── News tensor ───────────────────────────────────────────────────────────
     if data_dir:
+        encoder_name = cfg["data"].get("news_encoder", "auto")
         cache_path = cfg["data"].get("news_cache_path", "data/cache/news_tensor.npy")
-        news_tensor = build_news_tensor_real(news_df, dates, minerals, embed_dim, cache_path)
+        news_tensor, news_mask = build_news_tensor_real(
+            news_df, dates, minerals, embed_dim, cache_path, encoder_name
+        )
+        embed_dim = news_tensor.shape[-1]
+        cfg["data"]["news_embed_dim"] = embed_dim
     else:
         news_tensor = build_news_tensor(news_df, dates, minerals, embed_dim)
 
     # ── Datasets ──────────────────────────────────────────────────────────────
-    _, _, test_ds = build_datasets(prices_norm, news_tensor, dates, split, horizons, lookback)
+    _, _, test_ds = build_datasets(
+        prices_norm, news_tensor, dates, split, horizons, lookback, news_mask
+    )
     log.info(f"Test samples: {len(test_ds)}")
 
     # ── Model ─────────────────────────────────────────────────────────────────

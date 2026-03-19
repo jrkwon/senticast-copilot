@@ -6,7 +6,8 @@
 data:
   # Real dataset directory (takes priority over prices_path / news_path)
   data_dir: "src/data/dataset"
-  # Cache path for pre-computed news embeddings (relative to project root)
+  # Cache path for pre-computed news embeddings (relative to project root).
+  # Tip: change this path whenever you switch news_encoder to avoid stale caches.
   news_cache_path: "data/cache/news_tensor.npy"
   # Fallback sample data paths (used when data_dir is not set)
   prices_path: "data/sample/prices.csv"
@@ -14,7 +15,18 @@ data:
   minerals: ["gold", "silver", "copper"]
   lookback: 180          # input window (days)
   horizons: [30, 90, 180]  # prediction horizons (days)
-  news_embed_dim: 384    # sentence-transformer embedding size
+  # ── News embedding encoder ────────────────────────────────────────────────
+  # Options:
+  #   "auto"                – try finBERT → sentence-transformers → TF-IDF+SVD
+  #   "finbert"             – ProsusAI/finbert, finance-tuned BERT, 768-dim CLS token
+  #                           Requires: pip install transformers
+  #   "sentence-transformers" – all-MiniLM-L6-v2, general-purpose, 384-dim
+  #                           Requires: pip install sentence-transformers
+  #   "tfidf-svd"           – lightweight CPU fallback, news_embed_dim dimensions
+  news_encoder: "finbert"
+  # Embedding dimension.  For transformer-based encoders this is overridden
+  # automatically (finBERT → 768, sentence-transformers → 384).
+  news_embed_dim: 768
   # Normalization: "zscore" or "minmax"
   normalization: "zscore"
   # Missing value interpolation method
@@ -63,7 +75,7 @@ model:
 
   # News encoder
   news:
-    embed_dim: 384           # input embedding size (matches sentence-transformer)
+    embed_dim: 768           # input embedding size (overridden at runtime by actual encoder)
     proj_dim: 128            # projected dimension (matches d_model)
     num_heads: 4             # cross-attention heads for news–series fusion
 

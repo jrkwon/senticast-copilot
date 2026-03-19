@@ -106,7 +106,9 @@ src/data/dataset/news-summary-copper.csv
 ```
 price_series : [T-179 : T]  → shape (180, 3)  # 180일 × 3개 광물 (정규화된 종가)
 news_embeds  : 기준일 T에 해당하는 최신 뉴스 → shape (3, 3, embed_dim)
-                # 3개 광물 × 3개 지평(short/medium/long) × embed_dim
+               # 3개 광물 × 3개 지평(short/medium/long) × embed_dim
+news_mask    : 뉴스 가용성 마스크 → shape (3,)  bool
+               # True = 해당 광물의 뉴스 존재, False = 뉴스 없음 (2017-10 이전)
 ```
 
 ### 출력
@@ -125,10 +127,48 @@ intervals   : 예측 신뢰구간 (90% CI)    → shape (3, 3, 2)  # lower/upper
 - **학습 데이터 통계만** 사용 (시험 데이터 사전 관찰 방지)
 - 가격 범위가 광물별로 매우 다른 문제 (금 ~3000, 은 ~30, 구리 ~4) 해소
 
-### 뉴스 임베딩
-- **1순위**: `sentence-transformers` (all-MiniLM-L6-v2, 384차원)
-- **폴백**: TF-IDF + Truncated SVD (scikit-learn, `news_embed_dim` 차원)
-- 임베딩 결과는 `data/cache/news_tensor.npy`에 캐시됨 (재실행 시 재계산 불필요)
+### 뉴스 임베딩 (`news_encoder` 설정)
+
+뉴스 텍스트는 학습 전에 한 번 임베딩되며, 결과는 `data/cache/news_tensor.npy`에 캐시됩니다.
+
+| 옵션 | 설명 | 차원 | 설치 |
+|------|------|------|------|
+| `"finbert"` | **권장** – `ProsusAI/finbert` (금융 특화 BERT), CLS 토큰 | 768 | `pip install transformers` |
+| `"sentence-transformers"` | `all-MiniLM-L6-v2`, 범용 의미 유사도 모델 | 384 | `pip install sentence-transformers` |
+| `"tfidf-svd"` | TF-IDF + Truncated SVD, CPU 경량 폴백 | `news_embed_dim` | sklearn |
+| `"auto"` | finBERT → sentence-transformers → TF-IDF+SVD 순서로 시도 | 자동 감지 | — |
+
+> **finBERT를 권장하는 이유**: 금융 뉴스로 사전 학습(fine-tuned)되어 금리, 달러, 지정학적 리스크
+> 같은 금융 용어를 더 정확하게 이해합니다. 범용 모델(sentence-transformers)보다 금융 텍스트의
+> 의미론적 구분 능력이 뛰어나 모델 예측 성능에 직접적으로 기여합니다.
+
+> **캐시 주의**: `news_encoder`를 변경할 경우 `news_cache_path`도 함께 변경하거나
+> 기존 캐시 파일을 삭제하여 stale 캐시를 방지하세요.
+
+### 뉴스 가용성 마스크 (`news_mask`)
+
+뉴스 데이터는 2017-10-04부터만 존재합니다. 이전 날짜(전체의 31.3%, 학습 분할의 52%)에는
+뉴스가 없으므로, 학습 시 두 가지 처리가 적용됩니다:
+
+1. **NewsEncoder 게이팅**: `news_mask=False`인 광물의 context 벡터를 **명시적으로 0으로 설정**.
+   Linear projection의 bias 항이 "뉴스 없음"을 실제 신호처럼 보이게 만드는 문제를 방지합니다.
+
+2. **CrossAttention 마스킹**: `key_padding_mask`를 사용해 뉴스 없는 광물을 attention에서 제외.
+   전체 광물이 마스크된 배치 행은 attention을 건너뛰어 NaN 발생을 방지합니다.
+
+```
+뉴스 없는 구간 (2013-12 ~ 2017-10):
+  news_embeds → 0 벡터
+  news_mask   → [False, False, False]
+  → NewsEncoder output: [0, 0, 0]   (게이팅)
+  → CrossAttention: ts_feat 그대로 통과 (마스킹)
+
+뉴스 있는 구간 (2017-10 이후):
+  news_embeds → 실제 임베딩
+  news_mask   → [True, True, True]
+  → NewsEncoder output: 실제 context 벡터
+  → CrossAttention: 뉴스 정보가 시계열 특징과 융합
+```
 
 ### 결측치 처리
 - 주말/공휴일: 선형 보간
@@ -140,9 +180,9 @@ intervals   : 예측 신뢰구간 (90% CI)    → shape (3, 3, 2)  # lower/upper
 ```
 전체 기간: 2013-12-05 ~ 2026-02-26 (3,076 거래일)
 
-학습: 60% = 약 1,845일 (2013-12-05 ~ 2019-02)
+학습: 60% = 약 1,845일 (2013-12-05 ~ 2019-02)  ← 52%가 뉴스 없음 → news_mask로 처리
 검증: 20% = 약 615일  (2019-02 ~ 2021-07)
-시험: 20% = 약 615일  (2021-07 ~ 2026-02)
+시험: 20% = 약 615일  (2021-07 ~ 2026-02)       ← 전부 뉴스 존재
 
 롤링 포워드: step=30일 단위로 윈도를 앞으로 이동하며 평가
 ```
@@ -153,10 +193,11 @@ intervals   : 예측 신뢰구간 (90% CI)    → shape (3, 3, 2)  # lower/upper
 
 ```yaml
 data:
-  data_dir: "src/data/dataset"    # 실제 데이터 디렉토리
+  data_dir: "src/data/dataset"          # 실제 데이터 디렉토리
   news_cache_path: "data/cache/news_tensor.npy"  # 임베딩 캐시
+  news_encoder: "finbert"               # 뉴스 인코더 선택
+  news_embed_dim: 768                   # finBERT=768, sentence-transformers=384
   minerals: ["gold", "silver", "copper"]
   lookback: 180
   horizons: [30, 90, 180]
-  news_embed_dim: 384
 ```

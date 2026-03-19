@@ -190,8 +190,9 @@ class SentiCast(nn.Module):
 
     def encode(
         self,
-        price_series: torch.Tensor,    # (B, L, M)
-        news_embeds:  torch.Tensor,    # (B, M, 3, embed_dim)
+        price_series: torch.Tensor,                   # (B, L, M)
+        news_embeds:  torch.Tensor,                   # (B, M, 3, embed_dim)
+        news_mask:    Optional[torch.Tensor] = None,  # (B, M) bool
     ) -> torch.Tensor:
         """Return context tensor (B, L, d_model) for conditioning."""
         # GLAFF
@@ -199,9 +200,9 @@ class SentiCast(nn.Module):
         # Positional encoding + Transformer
         x = self.pos_enc(x)
         x = self.transformer(x)                               # (B, L, d_model)
-        # News fusion
-        news_ctx = self.news_enc(news_embeds)                 # (B, M, d_model)
-        x = self.news_cross_attn(x, news_ctx)                 # (B, L, d_model)
+        # News fusion – pass mask so missing-news minerals are gated to zero
+        news_ctx = self.news_enc(news_embeds, news_mask)      # (B, M, d_model)
+        x = self.news_cross_attn(x, news_ctx, news_mask)      # (B, L, d_model)
         # MoE
         moe_out, aux_loss = self.moe(x)
         x = self.moe_norm(x + moe_out)                        # (B, L, d_model)
@@ -211,9 +212,10 @@ class SentiCast(nn.Module):
 
     def forward(
         self,
-        price_series: torch.Tensor,    # (B, L, M)
-        news_embeds:  torch.Tensor,    # (B, M, 3, embed_dim)
-        targets: Optional[torch.Tensor] = None,  # (B, H, M) normalised targets
+        price_series: torch.Tensor,                   # (B, L, M)
+        news_embeds:  torch.Tensor,                   # (B, M, 3, embed_dim)
+        targets:      Optional[torch.Tensor] = None,  # (B, H, M) normalised targets
+        news_mask:    Optional[torch.Tensor] = None,  # (B, M) bool
     ) -> Dict[str, torch.Tensor]:
         """
         Training forward pass.
@@ -223,7 +225,7 @@ class SentiCast(nn.Module):
           - "quant_preds"    : (B, H, M, Q) quantile predictions
           - "moe_aux_loss"   : scalar MoE load-balancing loss
         """
-        context = self.encode(price_series, news_embeds)   # (B, L, d_model)
+        context = self.encode(price_series, news_embeds, news_mask)   # (B, L, d_model)
 
         out: Dict[str, torch.Tensor] = {}
 
@@ -243,9 +245,10 @@ class SentiCast(nn.Module):
     @torch.no_grad()
     def predict(
         self,
-        price_series: torch.Tensor,    # (B, L, M)
-        news_embeds:  torch.Tensor,    # (B, M, 3, embed_dim)
-        n_samples: int = 20,
+        price_series: torch.Tensor,                   # (B, L, M)
+        news_embeds:  torch.Tensor,                   # (B, M, 3, embed_dim)
+        n_samples:    int = 20,
+        news_mask:    Optional[torch.Tensor] = None,  # (B, M) bool
     ) -> Dict[str, torch.Tensor]:
         """
         Inference: return point predictions and confidence intervals.
@@ -256,7 +259,7 @@ class SentiCast(nn.Module):
           - "upper"  : (B, H, M)    – 95th percentile
           - "median" : (B, H, M)    – quantile head median prediction
         """
-        context = self.encode(price_series, news_embeds)
+        context = self.encode(price_series, news_embeds, news_mask)
 
         # Diffusion ensemble
         samples = self.diffusion.sample(context, n_samples=n_samples, return_all=True)
