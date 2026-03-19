@@ -33,6 +33,9 @@ logs/
 # Data (sensitive / large)
 data/sample/*.csv
 
+# Generated news embedding cache
+data/cache/
+
 # OS
 .DS_Store
 Thumbs.db

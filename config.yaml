@@ -4,6 +4,11 @@
 # Data
 # ─────────────────────────────────────────────
 data:
+  # Real dataset directory (takes priority over prices_path / news_path)
+  data_dir: "src/data/dataset"
+  # Cache path for pre-computed news embeddings (relative to project root)
+  news_cache_path: "data/cache/news_tensor.npy"
+  # Fallback sample data paths (used when data_dir is not set)
   prices_path: "data/sample/prices.csv"
   news_path: "data/sample/news.csv"
   minerals: ["gold", "silver", "copper"]

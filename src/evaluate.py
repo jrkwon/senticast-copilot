@@ -24,8 +24,11 @@ import yaml
 from src.data.preprocessing import (
     Normalizer,
     build_news_tensor,
+    build_news_tensor_real,
     load_news,
+    load_news_real,
     load_prices,
+    load_prices_real,
     make_rolling_splits,
 )
 from src.data.dataset import build_datasets
@@ -52,8 +55,14 @@ def main(args: argparse.Namespace) -> None:
     embed_dim = cfg["data"]["news_embed_dim"]
 
     # ── Load data ──────────────────────────────────────────────────────────────
-    prices_df = load_prices(cfg["data"]["prices_path"], minerals)
-    news_df   = load_news(cfg["data"]["news_path"])
+    data_dir = cfg["data"].get("data_dir")
+    if data_dir:
+        log.info(f"Using real dataset from '{data_dir}'")
+        prices_df = load_prices_real(data_dir, minerals)
+        news_df   = load_news_real(data_dir, minerals)
+    else:
+        prices_df = load_prices(cfg["data"]["prices_path"], minerals)
+        news_df   = load_news(cfg["data"]["news_path"])
     dates     = prices_df["date"]
     n_total   = len(prices_df)
 
@@ -77,7 +86,11 @@ def main(args: argparse.Namespace) -> None:
     prices_norm = normalizer.transform(prices_df, minerals)[minerals].values.astype(np.float32)
 
     # ── News tensor ───────────────────────────────────────────────────────────
-    news_tensor = build_news_tensor(news_df, dates, minerals, embed_dim)
+    if data_dir:
+        cache_path = cfg["data"].get("news_cache_path", "data/cache/news_tensor.npy")
+        news_tensor = build_news_tensor_real(news_df, dates, minerals, embed_dim, cache_path)
+    else:
+        news_tensor = build_news_tensor(news_df, dates, minerals, embed_dim)
 
     # ── Datasets ──────────────────────────────────────────────────────────────
     _, _, test_ds = build_datasets(prices_norm, news_tensor, dates, split, horizons, lookback)
