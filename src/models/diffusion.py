@@ -269,7 +269,7 @@ class DiffusionBackbone(nn.Module):
                 alpha_prev = self.alpha_cumprod[max(t_idx - step_size, 0)]
 
                 x0_pred = (y_t - (1 - alpha_t).sqrt() * eps) / alpha_t.sqrt()
-                x0_pred = x0_pred.clamp(-5, 5)
+                x0_pred = x0_pred.clamp(-10, 10)
 
                 # DDIM update (deterministic)
                 y_t = alpha_prev.sqrt() * x0_pred + (1 - alpha_prev).sqrt() * eps

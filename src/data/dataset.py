@@ -43,6 +43,13 @@ class MineralDataset(Dataset):
     news_mask : np.ndarray or None, shape (T_total, n_minerals), dtype bool
         ``True`` where a real news row exists.  When ``None``, all entries are
         treated as available (backward-compatible with the sample-data path).
+    use_revin : bool
+        When True (default) each sample is re-normalised by its own lookback-
+        window mean/std (Reversible Instance Normalisation).  This eliminates
+        the distribution shift that occurs when test-period prices lie far
+        outside the training-period range.  The batch then also carries
+        ``revin_mean`` and ``revin_std`` tensors so that predictions can be
+        inverse-transformed back to the original price space.
     """
 
     def __init__(
@@ -55,6 +62,7 @@ class MineralDataset(Dataset):
         start: int = 0,
         end: Optional[int] = None,
         news_mask: Optional[np.ndarray] = None,
+        use_revin: bool = True,
     ):
         self.prices = prices_norm
         self.news   = news_tensor
@@ -62,6 +70,7 @@ class MineralDataset(Dataset):
         self.horizons = sorted(horizons)
         self.lookback = lookback
         self.max_horizon = max(horizons)
+        self.use_revin = use_revin
         # All-True sentinel when no mask is supplied (sample-data path)
         n_minerals = prices_norm.shape[1]
         if news_mask is None:
@@ -85,22 +94,38 @@ class MineralDataset(Dataset):
         t = self.indices[idx]
 
         # Input: prices from [t-lookback, t)
-        price_series = self.prices[t - self.lookback : t]          # (L, M)
+        price_series = self.prices[t - self.lookback : t].copy()  # (L, M)
+
+        # Targets: prices at t + h for each horizon h
+        targets = np.stack([self.prices[t + h - 1] for h in self.horizons], axis=0)  # (H, M)
+
+        # RevIN – per-window instance normalisation.
+        # Normalises both the input window and the targets by the window's own
+        # mean/std so that the model always sees a stationary, unit-variance
+        # input regardless of where in the price history the window falls.
+        # This eliminates the train→test distribution shift caused by long-term
+        # price trends (e.g. gold rising from $1 300 to $5 300 over the dataset).
+        if self.use_revin:
+            revin_mean = price_series.mean(axis=0)                       # (M,)
+            revin_std  = np.maximum(price_series.std(axis=0), 1e-6)     # (M,)
+            price_series = (price_series - revin_mean) / revin_std
+            targets      = (targets      - revin_mean) / revin_std
 
         # News at reference date t (or last available)
         news_embeds = self.news[t - 1]                             # (M, 3, E)
         news_mask   = self.news_mask[t - 1]                        # (M,) bool
 
-        # Targets: prices at t + h for each horizon h
-        targets = np.stack([self.prices[t + h - 1] for h in self.horizons], axis=0)  # (H, M)
-
-        return {
+        result: Dict[str, torch.Tensor] = {
             "price_series": torch.tensor(price_series, dtype=torch.float32),
             "news_embeds":  torch.tensor(news_embeds,  dtype=torch.float32),
             "news_mask":    torch.tensor(news_mask,    dtype=torch.bool),
             "targets":      torch.tensor(targets,      dtype=torch.float32),
             "ref_idx":      torch.tensor(t,            dtype=torch.long),
         }
+        if self.use_revin:
+            result["revin_mean"] = torch.tensor(revin_mean, dtype=torch.float32)
+            result["revin_std"]  = torch.tensor(revin_std,  dtype=torch.float32)
+        return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +140,7 @@ def build_datasets(
     horizons: List[int],
     lookback: int = 180,
     news_mask: Optional[np.ndarray] = None,
+    use_revin: bool = True,
 ) -> Tuple["MineralDataset", "MineralDataset", "MineralDataset"]:
     """Return (train_ds, val_ds, test_ds) for a given DataSplit."""
     kwargs = dict(
@@ -124,6 +150,7 @@ def build_datasets(
         horizons=horizons,
         lookback=lookback,
         news_mask=news_mask,
+        use_revin=use_revin,
     )
     train_ds = MineralDataset(**kwargs, start=split.train[0], end=split.train[1])
     val_ds   = MineralDataset(**kwargs, start=split.val[0],   end=split.val[1])

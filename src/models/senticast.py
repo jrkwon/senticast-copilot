@@ -234,10 +234,17 @@ class SentiCast(nn.Module):
             out["diffusion_loss"] = self.diffusion.diffusion_loss(targets, context)
 
         # Quantile head (always)
-        pooled = context.mean(dim=1)                       # (B, d_model)
-        q_flat = self.quant_head(pooled)                   # (B, H*M*Q)
+        # Use the last time-step context (most recent market state) instead of
+        # the mean-pool which discards the current price level.
+        pooled = context[:, -1, :]                        # (B, d_model)
+        q_flat = self.quant_head(pooled)                  # (B, H*M*Q)
         B = price_series.shape[0]
-        out["quant_preds"] = q_flat.reshape(B, self.n_horizons, self.n_minerals, self.Q)
+        q_preds = q_flat.reshape(B, self.n_horizons, self.n_minerals, self.Q)
+        # Last-price residual anchor: the head predicts deviations from the
+        # last observed (RevIN-normalised) price so that even an untrained
+        # model produces reasonable starting predictions.
+        last_price = price_series[:, -1, :].unsqueeze(1).unsqueeze(-1)  # (B,1,M,1)
+        out["quant_preds"] = q_preds + last_price
 
         out["moe_aux_loss"] = self._moe_aux_loss
         return out
@@ -269,10 +276,12 @@ class SentiCast(nn.Module):
         upper = samples.quantile(0.95, dim=1)
 
         # Quantile head median
-        pooled  = context.mean(dim=1)
+        pooled  = context[:, -1, :]
         q_flat  = self.quant_head(pooled)
         B = price_series.shape[0]
         q_preds = q_flat.reshape(B, self.n_horizons, self.n_minerals, self.Q)
+        last_price = price_series[:, -1, :].unsqueeze(1).unsqueeze(-1)  # (B,1,M,1)
+        q_preds = q_preds + last_price
         median_idx = self.quantiles.index(0.50) if 0.50 in self.quantiles else self.Q // 2
         median = q_preds[..., median_idx]
 

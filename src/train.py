@@ -224,6 +224,8 @@ def evaluate_on_test(
 
     all_true, all_mean, all_lower, all_upper, all_median = [], [], [], [], []
     all_ref_idx = []
+    all_revin_mean: List[np.ndarray] = []
+    all_revin_std:  List[np.ndarray] = []
 
     for batch in test_loader:
         ps  = batch["price_series"].to(device)
@@ -241,19 +243,38 @@ def evaluate_on_test(
         all_median.append(pred["median"].cpu().numpy())
         all_ref_idx.append(batch["ref_idx"].numpy())
 
-    y_true   = np.concatenate(all_true,   axis=0)
+        if "revin_mean" in batch:
+            all_revin_mean.append(batch["revin_mean"].cpu().numpy())  # (B, M)
+            all_revin_std.append(batch["revin_std"].cpu().numpy())    # (B, M)
+
+    y_true   = np.concatenate(all_true,   axis=0)   # (N, H, M)
     y_mean   = np.concatenate(all_mean,   axis=0)
     y_lower  = np.concatenate(all_lower,  axis=0)
     y_upper  = np.concatenate(all_upper,  axis=0)
     y_median = np.concatenate(all_median, axis=0)
     ref_idx  = np.concatenate(all_ref_idx, axis=0)
 
-    # Denormalise
-    y_true_dn   = normalizer.inverse_transform_all(y_true,   minerals)
-    y_mean_dn   = normalizer.inverse_transform_all(y_mean,   minerals)
-    y_lower_dn  = normalizer.inverse_transform_all(y_lower,  minerals)
-    y_upper_dn  = normalizer.inverse_transform_all(y_upper,  minerals)
-    y_median_dn = normalizer.inverse_transform_all(y_median, minerals)
+    # ── Denormalise ────────────────────────────────────────────────────────────
+    if all_revin_mean:
+        # Two-step inverse: RevIN-reverse → global-normaliser-reverse
+        rm = np.concatenate(all_revin_mean, axis=0)[:, None, :]  # (N, 1, M)
+        rs = np.concatenate(all_revin_std,  axis=0)[:, None, :]  # (N, 1, M)
+
+        def _undo_revin(arr: np.ndarray) -> np.ndarray:
+            return arr * rs + rm  # back to global-normalised space
+
+        y_true_dn   = normalizer.inverse_transform_all(_undo_revin(y_true),   minerals)
+        y_mean_dn   = normalizer.inverse_transform_all(_undo_revin(y_mean),   minerals)
+        y_lower_dn  = normalizer.inverse_transform_all(_undo_revin(y_lower),  minerals)
+        y_upper_dn  = normalizer.inverse_transform_all(_undo_revin(y_upper),  minerals)
+        y_median_dn = normalizer.inverse_transform_all(_undo_revin(y_median), minerals)
+    else:
+        # Legacy path: no RevIN, use global normaliser directly
+        y_true_dn   = normalizer.inverse_transform_all(y_true,   minerals)
+        y_mean_dn   = normalizer.inverse_transform_all(y_mean,   minerals)
+        y_lower_dn  = normalizer.inverse_transform_all(y_lower,  minerals)
+        y_upper_dn  = normalizer.inverse_transform_all(y_upper,  minerals)
+        y_median_dn = normalizer.inverse_transform_all(y_median, minerals)
 
     horizons = cfg["data"]["horizons"]
     metrics = compute_all_metrics(y_true_dn, y_mean_dn, y_lower_dn, y_upper_dn, horizons, minerals)
