@@ -114,7 +114,7 @@ def main(args: argparse.Namespace) -> None:
     # ── Evaluate ──────────────────────────────────────────────────────────────
     result = evaluate_on_test(model, test_ds, cfg, device, normalizer, minerals)
 
-    # ── Save metrics ──────────────────────────────────────────────────────────
+    # ── Save metrics & prediction arrays ──────────────────────────────────────
     os.makedirs(cfg["output"]["results_dir"], exist_ok=True)
     out_path = os.path.join(
         cfg["output"]["results_dir"],
@@ -123,6 +123,21 @@ def main(args: argparse.Namespace) -> None:
     with open(out_path, "w") as f:
         json.dump(result["metrics"], f, indent=2)
     log.info(f"Metrics saved → {out_path}")
+
+    npz_path = os.path.join(
+        cfg["output"]["results_dir"],
+        f"eval_split{args.split_idx}.npz",
+    )
+    np.savez(
+        npz_path,
+        y_true=result["y_true"],
+        y_mean=result["y_mean"],
+        y_lower=result["y_lower"],
+        y_upper=result["y_upper"],
+        y_median=result["y_median"],
+        ref_idx=result["ref_idx"],
+    )
+    log.info(f"Prediction arrays saved → {npz_path}")
 
 
 if __name__ == "__main__":
