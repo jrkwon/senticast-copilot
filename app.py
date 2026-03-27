@@ -272,6 +272,8 @@ def _training_generator(
     Gradio streaming generator: runs training as a subprocess and yields
     ``(log_text, loss_figure, status_text)`` tuples after every log line.
     """
+    split_idx = int(split_idx)
+
     if _training_proc.is_running:
         yield "⚠️ A training job is already running!", None, "⚠️ Already running"
         return
@@ -355,6 +357,7 @@ def _evaluation_generator(
 ) -> Generator:
     """Run ``src.evaluate`` as a subprocess and stream its output."""
     ckpt = checkpoint_path.strip()
+    split_idx = int(split_idx)
     if not ckpt:
         ckpt = str(CHECKPOINTS_DIR / f"best_split{split_idx}.pt")
 
@@ -650,7 +653,7 @@ def build_ui() -> gr.Blocks:
 
             # Wire up
             refresh_btn.click(
-                fn=lambda: gr.Dropdown(choices=_list_checkpoints()),
+                fn=lambda: gr.update(choices=_list_checkpoints()),
                 outputs=[checkpoint_path],
             )
             eval_event = eval_btn.click(
